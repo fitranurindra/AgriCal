@@ -21,9 +21,9 @@
 
 // #define SEALEVELPRESSURE_HPA (1013.25)
 
-#define ANEMOMETER_PIN 2
+#define ANEMOMETER_PIN 27
 #define VANE_PIN A0
-#define RAIN_PIN 4
+#define RAIN_PIN 12
 
 #define soilMoisturePin A3
 
@@ -68,7 +68,7 @@ Adafruit_BME280 bme;
 
 BH1750 lightMeter;
 
-SoftwareSerial nodemcu(5,15);
+SoftwareSerial nodemcu(9,10);
 
 // StaticJsonDocument<300> doc;
 
@@ -292,47 +292,46 @@ void loop() {
 
   display.setTextSize(0.7);
 
+  display.setCursor(0, 0);
+  display.print("Light   : ");
+  display.print(lux);
+  display.println(" lx");
+
+  display.setCursor(0, 8);
+  display.print("Irr     : ");
+  display.print(solarRadiation);
+  display.println(" W/m^2");
+
+  display.setCursor(0, 16);
+  display.print("Moisture: ");
+  display.print(moisturePercentage);
+  display.println(" %");
+
+  display.setCursor(0, 24);
+  display.print("Humidity: ");
+  display.print(humBME);
+  display.println(" %");
+
   display.setCursor(0, 32);
+  display.print("Temp    : ");
+  display.print(tempBME);
+  display.println(" *C");
+
+  display.setCursor(0, 40);
+  display.print("Pressure: ");
+  display.print(pressBME);
+  display.println("mbar");
+
+  display.setCursor(0, 48);
+  display.print("Wind Spd: ");
+  display.print(windSpeed);
+  display.println(" km/h");
+
+  display.setCursor(0, 56);
   display.print("Voltage : ");
   display.print(voltage);
   display.println(" V");
 
-  // display.setCursor(0, 0);
-  // display.print("Light   : ");
-  // display.print(lux);
-  // display.println(" lx");
-
-  // display.setCursor(0, 8);
-  // display.print("Irr     : ");
-  // display.print(solarRadiation);
-  // display.println(" W/m^2");
-
-  // display.setCursor(0, 16);
-  // display.print("Moisture: ");
-  // display.print(moisturePercentage);
-  // display.println(" %");
-
-  // display.setCursor(0, 24);
-  // display.print("Humidity: ");
-  // display.print(humBME);
-  // display.println(" %");
-
-  // display.setCursor(0, 32);
-  // display.print("Temp    : ");
-  // display.print(tempBME);
-  // display.println(" *C");
-
-  // display.setCursor(0, 40);
-  // display.print("Pressure: ");
-  // display.print(pressBME);
-  // display.println("mbar");
-
-  // display.setCursor(0, 48);
-  // display.print("Wind Spd: ");
-  // display.print(windSpeed);
-  // display.println(" km/h");
-
-  // display.setCursor(0, 56);
   // display.print("Wind Dir: ");
   // display.print(windDirection);
   // display.println(" *");
@@ -361,5 +360,5 @@ void loop() {
   // serializeJson(doc, nodemcu);
   // doc.clear();
 
-  delay(1000);
+  delay(10000);
 }

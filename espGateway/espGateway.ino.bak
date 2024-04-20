@@ -9,7 +9,7 @@
 // #define dio0 2
 
 //D3 = Rx & D4 = Tx
-SoftwareSerial nodemcu(2, 4);
+SoftwareSerial nodemcu(3, 4);
 
 // const size_t capacity = JSON_OBJECT_SIZE(7);
 // DynamicJsonDocument doc(capacity);

@@ -3,8 +3,8 @@
 #define SECRET
 #define THINGNAME "AgriCal"                         //change this
  
-const char WIFI_SSID[] = "alfitra*";               //change this
-const char WIFI_PASSWORD[] = "bhayangkara";           //change this
+const char WIFI_SSID[] = "SANGKURIANG L-1";               //change this
+const char WIFI_PASSWORD[] = "SANGK11*";           //change this
 const char AWS_IOT_ENDPOINT[] = "axgujjldmu0bz-ats.iot.ap-southeast-2.amazonaws.com";       //change this
  
 // Amazon Root CA 1
