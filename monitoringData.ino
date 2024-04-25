@@ -138,8 +138,8 @@ void publishMessage()
   doc["pressure"] = pressBME;
 
   doc["windSpeed"] = windSpeed;
-  doc["windDirection"] = windGust;
-  doc["windGust"] = windDirection;
+  doc["windDirection"] = windDirection;
+  doc["windGust"] = windGust;
   doc["rainAmmount"] = rainAmmount;
   char jsonBuffer[512];
   serializeJson(doc, jsonBuffer); // print to client
@@ -349,8 +349,8 @@ void loop() {
   // doc["pressure"] = pressBME;
 
   // doc["windSpeed"] = windSpeed;
-  // doc["windDirection"] = windGust;
-  // doc["windGust"] = windDirection;
+  // doc["windDirection"] = windDirection;
+  // doc["windGust"] = windGust;
   // doc["rainAmmount"] = rainAmmount;
 
   publishMessage();
