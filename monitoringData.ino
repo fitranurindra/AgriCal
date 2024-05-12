@@ -16,6 +16,8 @@
 #include <ArduinoJson.h>
 #include <SoftwareSerial.h>
 
+#include "RTClib.h"
+
 #define AWS_IOT_PUBLISH_TOPIC   "esp32/pub"
 #define AWS_IOT_SUBSCRIBE_TOPIC "esp32/sub"
 
@@ -37,8 +39,6 @@
 WiFiClientSecure net = WiFiClientSecure();
 PubSubClient client(net);
 
-unsigned long nextCalc;
-unsigned long timer;
 
 float rainAmmount;
 float windSpeed;
@@ -60,6 +60,10 @@ float solarRadiation;
 float analogValue = 0;
 float voltage = 0;
 
+char daysOfTheWeek[7][12] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+int update_mode = 2;
+volatile bool isUpdate = false;
+
 // Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
@@ -70,106 +74,7 @@ BH1750 lightMeter;
 
 SoftwareSerial nodemcu(9,10);
 
-// StaticJsonDocument<300> doc;
-
-// /*
-//  * JSON Data Format
-// */
-// const size_t capacity = JSON_OBJECT_SIZE(7);
-// DynamicJsonDocument doc(capacity);
-
-void connectAWS()
-{
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
- 
-  Serial.println("Connecting to Wi-Fi");
- 
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    delay(500);
-    Serial.print(".");
-  }
- 
-  // Configure WiFiClientSecure to use the AWS IoT device credentials
-  net.setCACert(AWS_CERT_CA);
-  net.setCertificate(AWS_CERT_CRT);
-  net.setPrivateKey(AWS_CERT_PRIVATE);
- 
-  // Connect to the MQTT broker on the AWS endpoint we defined earlier
-  client.setServer(AWS_IOT_ENDPOINT, 8883);
- 
-  // Create a message handler
-  client.setCallback(messageHandler);
- 
-  Serial.println("Connecting to AWS IOT");
- 
-  while (!client.connect(THINGNAME))
-  {
-    Serial.print(".");
-    delay(100);
-  }
- 
-  if (!client.connected())
-  {
-    Serial.println("AWS IoT Timeout!");
-    return;
-  }
- 
-  // Subscribe to a topic
-  client.subscribe(AWS_IOT_SUBSCRIBE_TOPIC);
- 
-  Serial.println("AWS IoT Connected!");
-}
-
-void publishMessage()
-{
-  StaticJsonDocument<200> doc;
-  //Assign collected data to JSON Object
-  doc["voltage"] = voltage;
-
-  doc["lux"] = lux;
-  doc["solarRadiation"] = solarRadiation;
-
-  doc["moisture"] = moisturePercentage;
-
-  doc["humidity"] = humBME;
-  doc["temperature"] = tempBME;
-  doc["pressure"] = pressBME;
-
-  doc["windSpeed"] = windSpeed;
-  doc["windDirection"] = windDirection;
-  doc["windGust"] = windGust;
-  doc["rainAmmount"] = rainAmmount;
-  char jsonBuffer[512];
-  serializeJson(doc, jsonBuffer); // print to client
- 
-  client.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer);
-}
-
-void messageHandler(char* topic, byte* payload, unsigned int length)
-{
-  Serial.print("incoming: ");
-  Serial.println(topic);
- 
-  StaticJsonDocument<200> doc;
-  deserializeJson(doc, payload);
-  const char* message = doc["message"];
-  Serial.println(message);
-}
-
-void bme_update() {
-  humBME = bme.readHumidity();
-  tempBME = bme.readTemperature();
-  pressBME = bme.readPressure() / 100.0F;
-}
-
-void weather_update(){
-  rainAmmount = ws1.getRain() / 4000;
-  windSpeed = ws1.getWindSpeed() / 10;
-  windDirection = ws1.getWindDirection();
-  windGust = ws1.getWindGust() / 10;
-}
+RTC_DS3231 rtc;
 
 void setup() {
   Serial.begin(115200);
@@ -178,6 +83,15 @@ void setup() {
 
   // Initialize the I2C bus (BH1750 library doesn't do this automatically)
   Wire.begin();
+  rtc.begin();
+
+  DateTime now = rtc.now();
+  DateTime compiled = DateTime(F(__DATE__), F(__TIME__));
+  if (now.unixtime() < compiled.unixtime()) {
+    Serial.println("RTC is older than compile time! Updating");
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  }
+
   lightMeter.begin();
 
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3D for 128x64
@@ -203,91 +117,81 @@ void setup() {
 
   attachInterrupt(digitalPinToInterrupt(RAIN_PIN), ws1.countRain, FALLING); //ws1.countRain is the ISR for the rain gauge.
   attachInterrupt(digitalPinToInterrupt(ANEMOMETER_PIN), ws1.countAnemometer, FALLING); //ws1.countAnemometer is the ISR for the anemometer.
-  nextCalc = millis() + CALC_INTERVAL;
 
   Serial.println("Program started");
 }
 
 void loop() {
-  timer = millis();
+  int amtUpdate = xUpdate(update_mode);
+  int* time_update = (int*) malloc(amtUpdate * sizeof(int)); 
+  updateTime(time_update, update_mode); 
 
-  //Update Data Every Cycle
-  bme_update();
-  ws1.update();
-  weather_update();
+  DateTime now = rtc.now();
 
-  // soilMoistureValue = analogRead(soilMoisturePin);
-  soilMoistureValue = analogRead(soilMoisturePin)*470/2480;
-  moisturePercentage = map(soilMoistureValue, AirValue, WaterValue, 0, 100);
-
-  lux = lightMeter.readLightLevel();
-  solarRadiation = (lux*0.0079);
-
-  analogValue = analogRead(voltagePin);
-  voltage = map(analogValue, 0, 4095, 0.0, 3280.0); //deliberate mistake ;)
-  voltage /= 200;
-  if (voltage < 11.9){
-    voltage *= 1.1;
-  }
-  else if ((voltage > 11.9) && (voltage < 12.9)){
-    voltage *= 1.08;
-  }
-  else if ((voltage > 12.9) && (voltage < 13.9)){
-    voltage *= 1.04;
-  }
-  else if ((voltage > 13.9) && (voltage < 14.6)){
-    voltage *= 1.02;
-  }
-  else if (voltage > 14.61){
-    voltage *= 0.98;
+  for (int i = 0; i < amtUpdate; i++){
+    if(now.minute() == time_update[i] && now.second() < 31){
+      isUpdate = true;
+      break;
+    }
+    else{
+      isUpdate = false;
+    }
   }
 
-  Serial.print("Voltage: ");
-  Serial.print(voltage);
-  Serial.println(" V");
+  if (isUpdate){
+    showDate();     //show date on Serial Monitor
+    showTime();    //Current time: 24 Hrs
 
-  Serial.print("Light: ");
-  Serial.print(lux);
-  Serial.println(" lx");
+    // Update Weather Data
+    bme_update();
+    ws1.update();
+    weather_update();
+    voltage_update();
+    soilMoisture_update();
+    lux_update();
 
-  Serial.print("Solar Radiation: ");
-  Serial.print(solarRadiation);
-  Serial.println(" W/m2");
+    serialMonitor();
 
-  Serial.print("Moisture: ");
-  Serial.print(moisturePercentage);
-  Serial.println("%");
+    oledDisplay();
 
-  Serial.print("Humidity: ");
-  Serial.print(humBME);
-  Serial.println("%");
+    publishMessage();
+  }
+  else{
+    display.clearDisplay();
+    display.display(); 
+    int wait;
+    for(int i = 1; i < amtUpdate; i++){
+      if (time_update[i] == 0){
+        time_update[i] = 60;
+      }
 
-  Serial.print("Temperature: ");
-  Serial.print(tempBME);
-  Serial.println("*C");
+      if (now.minute() - time_update[i] < 0){
+        wait = abs(now.minute() - time_update[i]);
+        break;
+      }
+    }
+    Serial.print("Wait ");
+    Serial.print(wait);
+    Serial.println(" Minutes Again");
+    showTime();
+  }
 
-  Serial.print("Pressure: ");
-  Serial.print(pressBME);
-  Serial.println("mbar");
+  client.loop();
 
-  Serial.print("Wind speed: ");
-  Serial.print(windSpeed);
-  Serial.println(" km/h");
+  delay(10000);
+}
 
-  Serial.print("Gusting at: ");
-  Serial.print(windGust);
-  Serial.println(" km/h");
+String formatDate(int a, int b, int c) { 
+  String formattedDate = String(a) + "/" + String(b) + "/" + String(c); 
+  return formattedDate; 
+}
 
-  Serial.print("Wind Direction: ");
-  Serial.print(windDirection);
-  Serial.println(" degree");
+String formatTime(int d, int e, int f) { 
+  String formattedTime = String(d) + ":" + String(e) + ":" + String(f); 
+  return formattedTime; 
+}
 
-  Serial.print("Total Rain: ");
-  Serial.print(rainAmmount);
-  Serial.println(" liter");
-
-  Serial.println("-------------------------------");
-
+void oledDisplay(){
   display.clearDisplay();
 
   display.setTextSize(0.7);
@@ -337,28 +241,273 @@ void loop() {
   // display.println(" *");
 
   display.display(); 
+}
 
-  // //Assign collected data to JSON Object
-  // doc["lux"] = lux;
-  // doc["solarRadiation"] = solarRadiation;
+void serialMonitor(){
+  Serial.print("Voltage: ");
+  Serial.print(voltage);
+  Serial.println(" V");
 
-  // doc["moisture"] = moisturePercentage;
+  Serial.print("Light: ");
+  Serial.print(lux);
+  Serial.println(" lx");
 
-  // doc["humidity"] = humBME;
-  // doc["temperature"] = tempBME;
-  // doc["pressure"] = pressBME;
+  Serial.print("Solar Radiation: ");
+  Serial.print(solarRadiation);
+  Serial.println(" W/m2");
 
-  // doc["windSpeed"] = windSpeed;
-  // doc["windDirection"] = windDirection;
-  // doc["windGust"] = windGust;
-  // doc["rainAmmount"] = rainAmmount;
+  Serial.print("Moisture: ");
+  Serial.print(moisturePercentage);
+  Serial.println("%");
 
-  publishMessage();
-  client.loop();
+  Serial.print("Humidity: ");
+  Serial.print(humBME);
+  Serial.println("%");
 
-  //Send data to NodeMCU
-  // serializeJson(doc, nodemcu);
-  // doc.clear();
+  Serial.print("Temperature: ");
+  Serial.print(tempBME);
+  Serial.println("*C");
 
-  delay(10000);
+  Serial.print("Pressure: ");
+  Serial.print(pressBME);
+  Serial.println("mbar");
+
+  Serial.print("Wind speed: ");
+  Serial.print(windSpeed);
+  Serial.println(" km/h");
+
+  Serial.print("Gusting at: ");
+  Serial.print(windGust);
+  Serial.println(" km/h");
+
+  Serial.print("Wind Direction: ");
+  Serial.print(windDirection);
+  Serial.println(" degree");
+
+  Serial.print("Total Rain: ");
+  Serial.print(rainAmmount);
+  Serial.println(" liter");
+
+  Serial.println("-------------------------------");
+}
+
+void connectAWS(){
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+ 
+  Serial.println("Connecting to Wi-Fi");
+ 
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(500);
+    Serial.print(".");
+  }
+ 
+  // Configure WiFiClientSecure to use the AWS IoT device credentials
+  net.setCACert(AWS_CERT_CA);
+  net.setCertificate(AWS_CERT_CRT);
+  net.setPrivateKey(AWS_CERT_PRIVATE);
+ 
+  // Connect to the MQTT broker on the AWS endpoint we defined earlier
+  client.setServer(AWS_IOT_ENDPOINT, 8883);
+ 
+  // Create a message handler
+  client.setCallback(messageHandler);
+ 
+  Serial.println("Connecting to AWS IOT");
+ 
+  while (!client.connect(THINGNAME))
+  {
+    Serial.print(".");
+    delay(100);
+  }
+ 
+  if (!client.connected())
+  {
+    Serial.println("AWS IoT Timeout!");
+    return;
+  }
+ 
+  // Subscribe to a topic
+  client.subscribe(AWS_IOT_SUBSCRIBE_TOPIC);
+ 
+  Serial.println("AWS IoT Connected!");
+}
+
+void publishMessage(){
+  StaticJsonDocument<200> doc;
+  //Assign collected data to JSON Object
+  DateTime nowDT = rtc.now();
+  String date = formatDate(nowDT.day(), nowDT.month(), nowDT.year());
+  String time = formatDate(nowDT.hour(), nowDT.minute(), nowDT.second());
+  doc["date"] = date;
+  doc["time"] = time;
+  
+  doc["voltage"] = voltage;
+
+  doc["lux"] = lux;
+  doc["solarRadiation"] = solarRadiation;
+
+  doc["moisture"] = moisturePercentage;
+
+  doc["humidity"] = humBME;
+  doc["temperature"] = tempBME;
+  doc["pressure"] = pressBME;
+
+  doc["windSpeed"] = windSpeed;
+  doc["windDirection"] = windDirection;
+  doc["windGust"] = windGust;
+  doc["rainAmmount"] = rainAmmount;
+  char jsonBuffer[512];
+  serializeJson(doc, jsonBuffer); // print to client
+ 
+  client.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer);
+}
+
+void messageHandler(char* topic, byte* payload, unsigned int length){
+  Serial.print("incoming: ");
+  Serial.println(topic);
+ 
+  StaticJsonDocument<200> doc;
+  deserializeJson(doc, payload);
+  const char* message = doc["message"];
+  Serial.println(message);
+}
+
+void bme_update() {
+  humBME = bme.readHumidity();
+  tempBME = bme.readTemperature();
+  pressBME = bme.readPressure() / 100.0F;
+}
+
+void weather_update(){
+  rainAmmount = ws1.getRain() / 4000;
+  windSpeed = ws1.getWindSpeed() / 10;
+  windDirection = ws1.getWindDirection();
+  windGust = ws1.getWindGust() / 10;
+}
+
+void voltage_update(){
+  analogValue = analogRead(voltagePin);
+  voltage = map(analogValue, 0, 4095, 0.0, 3280.0); //deliberate mistake ;)
+  voltage /= 200;
+  if (voltage < 11.9){
+    voltage *= 1.1;
+  }
+  else if ((voltage > 11.9) && (voltage < 12.9)){
+    voltage *= 1.08;
+  }
+  else if ((voltage > 12.9) && (voltage < 13.9)){
+    voltage *= 1.04;
+  }
+  else if ((voltage > 13.9) && (voltage < 14.6)){
+    voltage *= 1.02;
+  }
+  else if (voltage > 14.61){
+    voltage *= 0.98;
+  }
+}
+
+void soilMoisture_update(){
+  // soilMoistureValue = analogRead(soilMoisturePin);
+  soilMoistureValue = analogRead(soilMoisturePin)*470/2480;
+  moisturePercentage = map(soilMoistureValue, AirValue, WaterValue, 0, 100);
+}
+
+void lux_update(){
+  lux = lightMeter.readLightLevel();
+  solarRadiation = (lux*0.0079);
+}
+
+int xUpdate(int update_mode){
+  int amtUpdate;
+  if (update_mode == 0){
+    amtUpdate = 2;
+  }
+  else if (update_mode == 1){
+    amtUpdate = 4;
+  } 
+  else{
+    amtUpdate = 30;
+  }
+  return amtUpdate;
+}
+
+void showDate(){
+  DateTime nowDT = rtc.now();
+  Serial.print(daysOfTheWeek[nowDT.dayOfTheWeek()]);
+  Serial.print(" ");
+  Serial.print(nowDT.day(), DEC); Serial.print('/');
+  Serial.print(nowDT.month(), DEC); Serial.print('/');
+  Serial.print(nowDT.year(), DEC); Serial.print(" ==> ");
+}
+
+void showTime(){
+  DateTime nowDT = rtc.now();
+  Serial.print(nowDT.hour(), DEC); Serial.print(':');
+
+  byte myMin = nowDT.minute();
+  if (myMin < 10)
+  {
+    Serial.print('0');
+  }
+  Serial.print(nowDT.minute(), DEC); Serial.print(':');
+
+  byte mySec = nowDT.second();
+  if (mySec < 10)
+  {
+    Serial.print('0');
+  }
+  Serial.println(nowDT.second(), DEC);
+}
+
+void updateTime(int* time_update, int update_mode){  
+  if (update_mode == 0){ // Update Data Setiap 30 Menit
+    time_update[0] = 0;
+    time_update[1] = 30;
+  }
+  else if (update_mode == 1){ // Update Data Setiap 15 Menit
+    time_update[0] = 0;
+    time_update[1] = 15;
+    time_update[2] = 30;
+    time_update[3] = 45;
+  }
+  else{ // Update Data Setiap 10 Menit
+    // time_update[0] = 0;
+    // time_update[1] = 10;
+    // time_update[2] = 20;
+    // time_update[3] = 30;
+    // time_update[4] = 40;
+    // time_update[5] = 50;
+    time_update[0] = 0;
+    time_update[1] = 2;
+    time_update[2] = 4;
+    time_update[3] = 6;
+    time_update[4] = 8;
+    time_update[5] = 10;
+    time_update[6] = 12;
+    time_update[7] = 14;
+    time_update[8] = 16;
+    time_update[9] = 18;
+    time_update[10] = 20;
+    time_update[11] = 22;
+    time_update[12] = 24;
+    time_update[13] = 26;
+    time_update[14] = 28;
+    time_update[15] = 30;
+    time_update[16] = 32;
+    time_update[17] = 34;
+    time_update[18] = 36;
+    time_update[19] = 38;
+    time_update[20] = 40;
+    time_update[21] = 42;
+    time_update[22] = 44;
+    time_update[23] = 46;
+    time_update[24] = 48;
+    time_update[25] = 50;
+    time_update[26] = 52;
+    time_update[27] = 54;
+    time_update[28] = 56;
+    time_update[29] = 58;
+  }
 }
