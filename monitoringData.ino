@@ -61,7 +61,7 @@ float analogValue = 0;
 float voltage = 0;
 
 char daysOfTheWeek[7][12] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-int update_mode = 2;
+int update_mode = 1;
 volatile bool isUpdate = false;
 
 // Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
@@ -158,18 +158,10 @@ void loop() {
   }
   else{
     display.clearDisplay();
-    display.display(); 
-    int wait;
-    for(int i = 1; i < amtUpdate; i++){
-      if (time_update[i] == 0){
-        time_update[i] = 60;
-      }
+    display.display();
 
-      if (now.minute() - time_update[i] < 0){
-        wait = abs(now.minute() - time_update[i]);
-        break;
-      }
-    }
+    int wait = waitTime(amtUpdate, time_update, now.minute());
+
     Serial.print("Wait ");
     Serial.print(wait);
     Serial.println(" Minutes Again");
@@ -181,13 +173,60 @@ void loop() {
   delay(10000);
 }
 
+int waitTime(int a, int* b, int c){
+  int wait = 0;
+  for(int i = 0; i < a; i++){
+    if (c >= b[a-1]){
+      b[i] = 60;
+    }
+
+    if (c - b[i] < 0){
+      wait = abs(c - b[i]);
+      break;
+    }
+  }
+  return wait;
+}
+
 String formatDate(int a, int b, int c) { 
-  String formattedDate = String(a) + "/" + String(b) + "/" + String(c); 
+  String formattedDate;
+  String temp_a = String(a);
+  String temp_b = String(b);
+  String temp_c = String(c);
+
+  if (a < 10){
+    temp_a = "0" + temp_a;
+  }
+  if (b < 10){
+    temp_b = "0" + temp_b;
+  }
+  if (c < 10){
+    temp_c = "0" + temp_c;
+  }
+
+  formattedDate = temp_a + "/" + temp_b + "/" + temp_c;
+
   return formattedDate; 
 }
 
-String formatTime(int d, int e, int f) { 
-  String formattedTime = String(d) + ":" + String(e) + ":" + String(f); 
+String formatTime(int a, int b, int c) { 
+  String formattedTime;
+  String temp_a = String(a);
+  String temp_b = String(b);
+  String temp_c = String(c);
+
+  if (a < 10){
+    temp_a = "0" + temp_a;
+  }
+  if (b < 10){
+    temp_b = "0" + temp_b;
+  }
+  if (c < 10){
+    temp_c = "0" + temp_c;
+  }
+
+  formattedTime = temp_a + ":" + temp_b + ":" + temp_c;
+
   return formattedTime; 
 }
 
@@ -339,7 +378,7 @@ void publishMessage(){
   //Assign collected data to JSON Object
   DateTime nowDT = rtc.now();
   String date = formatDate(nowDT.day(), nowDT.month(), nowDT.year());
-  String time = formatDate(nowDT.hour(), nowDT.minute(), nowDT.second());
+  String time = formatTime(nowDT.hour(), nowDT.minute(), nowDT.second());
   doc["date"] = date;
   doc["time"] = time;
   
@@ -437,28 +476,14 @@ void showDate(){
   DateTime nowDT = rtc.now();
   Serial.print(daysOfTheWeek[nowDT.dayOfTheWeek()]);
   Serial.print(" ");
-  Serial.print(nowDT.day(), DEC); Serial.print('/');
-  Serial.print(nowDT.month(), DEC); Serial.print('/');
-  Serial.print(nowDT.year(), DEC); Serial.print(" ==> ");
+  String date = formatDate(nowDT.day(), nowDT.month(), nowDT.year());
+  Serial.print(date); Serial.print(" ==> ");
 }
 
 void showTime(){
   DateTime nowDT = rtc.now();
-  Serial.print(nowDT.hour(), DEC); Serial.print(':');
-
-  byte myMin = nowDT.minute();
-  if (myMin < 10)
-  {
-    Serial.print('0');
-  }
-  Serial.print(nowDT.minute(), DEC); Serial.print(':');
-
-  byte mySec = nowDT.second();
-  if (mySec < 10)
-  {
-    Serial.print('0');
-  }
-  Serial.println(nowDT.second(), DEC);
+  String time = formatTime(nowDT.hour(), nowDT.minute(), nowDT.second());
+  Serial.println(time);
 }
 
 void updateTime(int* time_update, int update_mode){  
