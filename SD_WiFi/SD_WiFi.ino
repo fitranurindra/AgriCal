@@ -39,7 +39,7 @@ const char* password = "SANGK11*";
 
 // Timer variables
 unsigned long lastTime = 0;
-unsigned long timerDelay = 15000;
+unsigned long timerDelay = 10000;
 
 // Variables to hold sensor readings
 float h;
@@ -49,13 +49,15 @@ float hic;
 float hif;
 
 String data_store[MAX_DATA];
-String temp[6];
+String temp[7];
 
 int StringCount = 0;
 
 int countSaveData = 0;
 
 String dataMessage;
+
+String lastData;
 
 uint32_t totalLineData = 0;
 
@@ -91,7 +93,8 @@ void initWiFi() {
 
 // Initialize SD card
 void initSDCard(){
-   if (!SD.begin()) {
+  delay(500);
+  if (!SD.begin()) {
     Serial.println("Card Mount Failed");
     return;
   }
@@ -181,6 +184,15 @@ void appendFile(fs::FS &fs, const char * path, const char * message) {
   file.close();
 }
 
+void deleteFile(fs::FS &fs, const char * path){
+  Serial.printf("Deleting file: %s\n", path);
+  if(fs.remove(path)){
+    Serial.println("File deleted");
+  } else {
+    Serial.println("Delete failed");
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   
@@ -210,9 +222,20 @@ void loop() {
   Serial.println(buttonState);
 
   if (buttonState == HIGH){
-    if (countSaveData != 0){
+    File file = SD.open("/data_backup.txt");
+    if (file){
       Serial.println("Send Stored Data to AWS IOT Cloud");
-      Serial.println("Sent data: ");
+
+      totalLineData = countLine(SD, "/data_backtup.txt");
+      lastData = LatestData(SD, "/data_backup.txt", totalLineData);
+      splitString(lastData, temp);
+
+      countSaveData = temp[0].toInt();
+
+      saveAllData(SD, "/data_backup.txt", data_store);
+
+      Serial.printf("Send %d data: \n", countSaveData);
+
       for (int i = 0; i < countSaveData; i++){
         // publish sebanyak data yang disave
         splitString(data_store[i], temp);
@@ -228,8 +251,10 @@ void loop() {
       Serial.println(data_store[0]);
 
       memset(data_store, 0, sizeof(data_store));
-      countSaveData = 0;
+
+      deleteFile(SD, "/data_backup.txt");
     }
+    file.close();
   }
 
   if ((millis() - lastTime) > timerDelay) {
@@ -246,19 +271,39 @@ void loop() {
     //Append the data to file
     appendFile(SD, "/data.txt", dataMessage.c_str());
 
-    Serial.println("Counting line on file: /data.txt\n");
-    totalLineData = countLine(SD, "/data.txt");
-    if (totalLineData == 0){
-      Serial.println("Failed to open file for counting the line");
-    }
-    else{
-      Serial.print("Total line on file: ");
-      Serial.println(totalLineData);
-    }
+    // Serial.println("Counting line on file: /data.txt\n");
+    // totalLineData = countLine(SD, "/data.txt");
+    // if (totalLineData == 0){
+    //   Serial.println("Failed to open file for counting the line");
+    // }
+    // else{
+    //   Serial.print("Total line on file: ");
+    //   Serial.println(totalLineData);
+    // }
 
     if (buttonState == LOW){
       Serial.println("Interlock! Save Data\n");
-      saveData(SD, "/data.txt", totalLineData);
+      File file = SD.open("/data_backup.txt");
+      if(!file) {
+        Serial.println("File for backup data doesn't exist");
+        Serial.println("Creating file for backup...");
+        writeFile(SD, "/data_backup.txt", "");
+        countSaveData = 0;
+      }
+      else {
+        Serial.println("File for backup data already exists");  
+        totalLineData = countLine(SD, "/data_backup.txt");
+        lastData = LatestData(SD, "/data_backup.txt", totalLineData);
+        splitString(lastData, temp);
+        countSaveData = temp[0].toInt();
+      }
+      file.close();
+      // saveData(SD, "/data.txt", totalLineData);
+      countSaveData += 1;
+      String temp_dataMessage = String(countSaveData) + "," + dataMessage;
+
+      //Append the data to backup file
+      appendFile(SD, "/data_backup.txt", temp_dataMessage.c_str());
       Serial.printf("Total Stored Data: %d\n", countSaveData);
     }
     else{
@@ -289,15 +334,30 @@ void splitString(String str, String* strs){
   }
 }
 
-void saveData(fs::FS &fs, const char * path, uint32_t position){
+String LatestData(fs::FS &fs, const char * path, uint32_t position){
   File file = SD.open(path);
+  String buffer;
 
   if (file) {
     file.seek(position);
     while (file.available()) {
-      String buffer = file.readStringUntil('\n');
-      data_store[countSaveData] = buffer;
-      countSaveData++;
+      buffer = file.readStringUntil('\n');
+    }
+    file.close();
+  }
+
+  return buffer;
+}
+
+void saveAllData(fs::FS &fs, const char * path, String* store){
+  File file = SD.open(path);
+  String buffer;
+  int i = 0;
+
+  if (file) {
+    while (file.available()) {
+      buffer = file.readStringUntil('\n');
+      store[i++] = buffer;
     }
     file.close();
   }
