@@ -1,13 +1,10 @@
-/*
-  Rui Santos
-  Complete project details at https://RandomNerdTutorials.com/esp32-microsd-card-arduino/
-  
-  Permission is hereby granted, free of charge, to any person obtaining a copy
-  of this software and associated documentation files.
-  
-  The above copyright notice and this permission notice shall be included in all
-  copies or substantial portions of the Software.
-*/
+#include "secrets.h"
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
+#include "WiFi.h"
+
+#include <ArduinoJson.h>
+#include <SoftwareSerial.h>
 
 // Libraries for SD card
 #include "FS.h"
@@ -19,9 +16,15 @@
 //Libraries for DHT
 #include "DHT.h"
 
+
 // Libraries to get time from NTP Server
-#include <WiFi.h>
 #include "time.h"
+
+#include <TFT_eSPI.h> // Hardware-specific library
+
+#include "Free_Fonts.h" // Include the header file attached to this sketch
+
+TFT_eSPI tft = TFT_eSPI();                   // Invoke custom library with default width and height
 
 #define DHTTYPE DHT11
 #define DHTPIN 17
@@ -31,11 +34,17 @@
 #define MAX_LEN 255
 #define MAX_DATA 1440
 
+#define AWS_IOT_PUBLISH_TOPIC   "esp32/pub"
+#define AWS_IOT_SUBSCRIBE_TOPIC "esp32/sub"
+
+WiFiClientSecure net = WiFiClientSecure();
+PubSubClient client(net);
+
 DHT dht(DHTPIN, DHTTYPE);
 
-// Replace with your network credentials
-const char* ssid     = "SANGKURIANG L-1";
-const char* password = "SANGK11*";
+// // Replace with your network credentials
+// const char* ssid     = "unga";
+// const char* password = "punyabunga";
 
 // Timer variables
 unsigned long lastTime = 0;
@@ -62,7 +71,7 @@ String lastData;
 uint32_t totalLineData = 0;
 
 // NTP server to request epoch time
-const char* ntpServer = "pool.ntp.org";
+// const char* ntpServer = "pool.ntp.org";
 
 // Variable to save current epoch time
 unsigned long epochTime; 
@@ -79,17 +88,17 @@ unsigned long getTime() {
   return now;
 }
 
-// Initialize WiFi
-void initWiFi() {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
-  Serial.print("Connecting to WiFi ..");
-  while (WiFi.status() != WL_CONNECTED) {
-    Serial.print('.');
-    delay(1000);
-  }
-  Serial.println(WiFi.localIP());
-}
+// // Initialize WiFi
+// void initWiFi() {
+//   WiFi.mode(WIFI_STA);
+//   WiFi.begin(ssid, password);
+//   Serial.print("Connecting to WiFi ..");
+//   while (WiFi.status() != WL_CONNECTED) { // while loop true selama tidak terhubung
+//     Serial.print('.');
+//     delay(1000);
+//   }
+//   Serial.println(WiFi.localIP());
+// }
 
 // Initialize SD card
 void initSDCard(){
@@ -193,13 +202,148 @@ void deleteFile(fs::FS &fs, const char * path){
   }
 }
 
+void tftDisplay(){
+  int xpos =  0;
+  int ypos = 40;
+
+  // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+  // Select different fonts to draw on screen using the print class
+  // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+  tft.fillScreen(TFT_NAVY); // Clear screen to navy background
+
+  header("Draw free fonts using print class");
+
+  // For comaptibility with Adafruit_GFX library the text background is not plotted when using the print class
+  // even if we specify it.
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.setCursor(xpos, ypos);    // Set cursor near top left corner of screen
+
+  tft.setFreeFont(FSB12);   // Select Free Serif 9 point font, could use:
+  // tft.setFreeFont(&FreeSerif9pt7b);
+  tft.println();          // Free fonts plot with the baseline (imaginary line the letter A would sit on)
+  // as the datum, so we must move the cursor down a line from the 0,0 position
+  tft.print("humidity: ");  // Print the font name onto the TFT screen
+  tft.print(h);
+
+  tft.setFreeFont(FSB12);       // Select Free Serif 12 point font
+  tft.println();                // Move cursor down a line
+  tft.print("Temperature (*C): ");  // Print the font name onto the TFT screen
+  tft.print(t);
+
+  tft.setFreeFont(FSB18);       // Select Free Serif 12 point font
+  tft.println();                // Move cursor down a line
+  tft.print("Temperature (*F): ");  // Print the font name onto the TFT screen
+  tft.print(f);
+
+  tft.setFreeFont(FSB24);       // Select Free Serif 24 point font
+  tft.println();                // Move cursor down a line
+  tft.print("hic: ");  // Print the font name onto the TFT screen
+  tft.print(hic);
+
+  delay(10000);
+}
+
+void publishMessage(){
+  StaticJsonDocument<200> doc;
+  //Assign collected data to JSON Object
+
+  doc["humidity"] = h;
+  doc["temperatureC"] = t;
+  doc["temperatureF"] = f;
+  doc["hiC"] = hic;
+
+  char jsonBuffer[512];
+
+  serializeJson(doc, jsonBuffer); // print to client
+ 
+  client.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer);
+}
+
+void messageHandler(char* topic, byte* payload, unsigned int length){
+  Serial.print("incoming: ");
+  Serial.println(topic);
+ 
+  StaticJsonDocument<200> doc;
+  deserializeJson(doc, payload);
+  const char* message = doc["message"];
+  Serial.println(message);
+}
+
+void WiFiStationConnected(WiFiEvent_t event, WiFiEventInfo_t info){
+  Serial.println("Connected to AP successfully!");
+}
+
+void WiFiGotIP(WiFiEvent_t event, WiFiEventInfo_t info){
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+  // connectAWS();
+}
+
+void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info){
+  Serial.println("Disconnected from WiFi access point");
+  Serial.print("WiFi lost connection. Reason: ");
+  Serial.println(info.wifi_sta_disconnected.reason);
+  Serial.println("Trying to Reconnect");
+
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+}
+
+void connectAWS(){
+  // WiFi.mode(WIFI_STA);
+  // WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+ 
+  // Serial.println("Connecting to Wi-Fi");
+ 
+  // while (WiFi.status() != WL_CONNECTED)
+  // {
+  //   delay(500);
+  //   Serial.print(".");
+  // }
+ 
+  // Configure WiFiClientSecure to use the AWS IoT device credentials
+  net.setCACert(AWS_CERT_CA);
+  net.setCertificate(AWS_CERT_CRT);
+  net.setPrivateKey(AWS_CERT_PRIVATE);
+ 
+  // Connect to the MQTT broker on the AWS endpoint we defined earlier
+  client.setServer(AWS_IOT_ENDPOINT, 8883);
+ 
+  // Create a message handler
+  client.setCallback(messageHandler);
+ 
+  Serial.printf("\nConnecting to AWS IOT\n");
+ 
+  while (!client.connect(THINGNAME)){
+    Serial.print(".");
+    delay(100);
+  }
+ 
+  if (!client.connected()){
+    Serial.println("AWS IoT Timeout!");
+    return;
+  }
+ 
+  // Subscribe to a topic
+  client.subscribe(AWS_IOT_SUBSCRIBE_TOPIC);
+ 
+  Serial.printf("\nAWS IoT Connected!\n");
+}
+
 void setup() {
   Serial.begin(115200);
   
-  initWiFi();
+  // initWiFi();
+
   dht.begin();
   initSDCard();
-  configTime(0, 0, ntpServer);
+
+  tft.begin();
+
+  tft.setRotation(1);
+
+  // configTime(0, 0, ntpServer);
   
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
@@ -215,13 +359,33 @@ void setup() {
     Serial.println("File already exists");  
   }
   file.close();
+
+  // delete old config
+  WiFi.disconnect(true);
+
+  delay(1000);
+  WiFi.onEvent(WiFiStationConnected, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_CONNECTED);
+  WiFi.onEvent(WiFiGotIP, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_GOT_IP);
+  WiFi.onEvent(WiFiStationDisconnected, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  connectAWS();
+    
+  Serial.println();
+
+  Serial.println("Program Started");
 }
 
 void loop() {
-  int buttonState = digitalRead(BUTTON_PIN);
-  Serial.println(buttonState);
+  // int buttonState = digitalRead(BUTTON_PIN);
+  // Serial.println(buttonState);
 
-  if (buttonState == HIGH){
+  if (WiFi.status() == WL_CONNECTED){
+    if(!client.connect(THINGNAME)){
+      connectAWS();
+    }
+
     File file = SD.open("/data_backup.txt");
     if (file){
       Serial.println("Send Stored Data to AWS IOT Cloud");
@@ -241,6 +405,13 @@ void loop() {
         splitString(data_store[i], temp);
         Serial.printf("%s : %s : ", temp[0], temp[5]);
         Serial.println(StringCount);
+        h = temp[2].toFloat();
+        t = temp[3].toFloat();
+        f = temp[4].toFloat();
+        hic = temp[5].toFloat();
+
+        publishMessage();
+        delay(1000);
         // Serial.println(data_store[i]);
       }
 
@@ -262,14 +433,17 @@ void loop() {
     epochTime = getTime();
 
     dhtUpdate();
+    publishMessage();
 
     //Concatenate all info separated by commas
     dataMessage = String(epochTime) + "," + String(h) + "," + String(t) + "," + String(f) + "," + String(hic) + "," + String(hif) + "\r\n";
-    Serial.print("Saving data to SD Card: ");
-    Serial.println(dataMessage);
+    Serial.printf("\nSaving data to SD Card: ");
+    Serial.print(dataMessage);
 
     //Append the data to file
     appendFile(SD, "/data.txt", dataMessage.c_str());
+
+    tftDisplay();
 
     // Serial.println("Counting line on file: /data.txt\n");
     // totalLineData = countLine(SD, "/data.txt");
@@ -281,7 +455,7 @@ void loop() {
     //   Serial.println(totalLineData);
     // }
 
-    if (buttonState == LOW){
+    if (WiFi.status() != WL_CONNECTED){
       Serial.println("Interlock! Save Data\n");
       File file = SD.open("/data_backup.txt");
       if(!file) {
@@ -313,9 +487,38 @@ void loop() {
     // readFile(SD, "/data.txt");
 
     lastTime = millis();
+  } 
+  else if (WiFi.status() != WL_CONNECTED){
+    int xpos =  0;
+    int ypos = 40;
+
+    // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    // Select different fonts to draw on screen using the print class
+    // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+    tft.fillScreen(TFT_NAVY); // Clear screen to navy background
+
+    header("WiFi not connected");
+
+    // For comaptibility with Adafruit_GFX library the text background is not plotted when using the print class
+    // even if we specify it.
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft.setCursor(xpos, ypos);    // Set cursor near top left corner of screen
+
+    tft.setFreeFont(FSB12);   // Select Free Serif 9 point font, could use:
+    // tft.setFreeFont(&FreeSerif9pt7b);
+    tft.println();          // Free fonts plot with the baseline (imaginary line the letter A would sit on)
+    // as the datum, so we must move the cursor down a line from the 0,0 position
+    tft.print("Reconnecting...");  // Print the font name onto the TFT screen
+
+    delay(5000);
+  }
+  else{
+    tft.fillScreen(TFT_BLACK);
   }
 
-  delay(1000);
+  client.loop();
+  delay(5000);
 }
 
 void splitString(String str, String* strs){
@@ -381,3 +584,60 @@ void dhtUpdate(){
   // Compute heat index in Celsius (isFahreheit = false)
   hic = dht.computeHeatIndex(t, h, false);
 }
+
+// Print the header for a display screen
+void header(const char *string)
+{
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_MAGENTA, TFT_BLUE);
+  tft.fillRect(0, 0, 480, 30, TFT_BLUE);
+  tft.setTextDatum(TC_DATUM);
+  tft.drawString(string, 239, 2, 4); // Font 4 for fast drawing with background
+}
+
+// Draw a + mark centred on x,y
+void drawDatum(int x, int y)
+{
+  tft.drawLine(x - 5, y, x + 5, y, TFT_GREEN);
+  tft.drawLine(x, y - 5, x, y + 5, TFT_GREEN);
+}
+
+
+// There follows a crude way of flagging that this example sketch needs fonts which
+// have not been enabled in the User_Setup.h file inside the TFT_HX8357 library.
+//
+// These lines produce errors during compile time if settings in User_Setup are not correct
+//
+// The error will be "does not name a type" but ignore this and read the text between ''
+// it will indicate which font or feature needs to be enabled
+//
+// Either delete all the following lines if you do not want warnings, or change the lines
+// to suit your sketch modifications.
+
+#ifndef LOAD_GLCD
+//ERROR_Please_enable_LOAD_GLCD_in_User_Setup
+#endif
+
+#ifndef LOAD_FONT2
+//ERROR_Please_enable_LOAD_FONT2_in_User_Setup!
+#endif
+
+#ifndef LOAD_FONT4
+//ERROR_Please_enable_LOAD_FONT4_in_User_Setup!
+#endif
+
+#ifndef LOAD_FONT6
+//ERROR_Please_enable_LOAD_FONT6_in_User_Setup!
+#endif
+
+#ifndef LOAD_FONT7
+//ERROR_Please_enable_LOAD_FONT7_in_User_Setup!
+#endif
+
+#ifndef LOAD_FONT8
+//ERROR_Please_enable_LOAD_FONT8_in_User_Setup!
+#endif
+
+#ifndef LOAD_GFXFF
+ERROR_Please_enable_LOAD_GFXFF_in_User_Setup!
+#endif
