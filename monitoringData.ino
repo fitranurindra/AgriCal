@@ -7,7 +7,7 @@
 #include <PubSubClient.h>
 #include "WiFi.h"
 
-#include <ADSWeather.h>
+#include <ADSWeatherV2.h>
 
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
@@ -38,7 +38,7 @@
 
 #define ANEMOMETER_PIN 27
 #define VANE_PIN A0
-#define RAIN_PIN 12
+#define RAIN_PIN 33
 
 #define soilMoisturePin A3
 
@@ -51,13 +51,19 @@
 
 #define MAX_DATA 1440
 
+#define UPDATE_BUTTON_PIN 16
+#define EMERGENCY_BUTTON_PIN 13
+
+#define EMERGENCY_RELAY_PIN 26
+#define SLEEP_RELAY_PIN 25
+
 WiFiClientSecure net = WiFiClientSecure();
 PubSubClient client(net);
 
 // Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
-ADSWeather ws1(RAIN_PIN, VANE_PIN, ANEMOMETER_PIN); //This should configure all pins correctly
+ADSWeatherV2 weatherStation(RAIN_PIN, VANE_PIN, ANEMOMETER_PIN);
 Adafruit_BME280 bme;
 BH1750 lightMeter;
 
@@ -69,13 +75,14 @@ TFT_eSPI tft = TFT_eSPI();
 
 float rainAmmount;
 float windSpeed;
-int windDirection;
+float windDirection;
 float windGust;
+float tempRain = 0;
 
 int soilMoistureValue = 0;
-const int AirValue = 500;
-const int WaterValue = 245;
-float moisturePercentage;
+const int AirValue = 2700;
+const int WaterValue = 1320;
+float moisturePercentage = 0;
 
 float tempBME;
 float humBME;
@@ -107,6 +114,25 @@ uint32_t totalLineData = 0;
 unsigned long previousMillis = 0;
 unsigned long interval = 30000;
 
+volatile bool isEmergency = false;
+volatile bool lastStateEmergency = false;
+volatile bool isDisplay = false;
+volatile bool isReconnectingDisplay = false;
+volatile bool manualUpdate = false;
+
+unsigned long lastDisplayTime = 0;
+unsigned long displayDelay = 60000; 
+unsigned long delayPageDisplay = 10000; 
+
+volatile bool first = false;
+
+// Timer variables
+unsigned long lastTime = 0;
+unsigned long timerDelay = 10000;
+
+unsigned long lastTimeEmergency = 0;
+unsigned long timerEmergencyDelay = 5000;
+
 void WiFiStationConnected(WiFiEvent_t event, WiFiEventInfo_t info){
   Serial.println("Connected to AP successfully!");
 }
@@ -126,9 +152,45 @@ void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info){
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 }
 
+void triggerManualUpdate(){
+  static unsigned long last_interrupt_time = 0;
+  unsigned long interrupt_time = millis();
+  // If interrupts come faster than 200ms, assume it's a bounce and ignore
+  if (interrupt_time - last_interrupt_time > 200) {
+    manualUpdate = true;
+  }
+  last_interrupt_time = interrupt_time;
+
+  Serial.println("Update Data Manually");
+}
+
+void triggerEmergencyCond(){
+  static unsigned long last_interrupt_time = 0;
+  unsigned long interrupt_time = millis();
+  // If interrupts come faster than 200ms, assume it's a bounce and ignore
+  if (interrupt_time - last_interrupt_time > 200) {
+    isEmergency = !isEmergency;
+  }
+  last_interrupt_time = interrupt_time;
+
+  if (isEmergency){
+    first = true;
+  } 
+  else{
+    first = false;
+  }
+  Serial.println("Change Emergency State");
+}
+
 void setup() {
   Serial.begin(115200);
   nodemcu.begin(115200);
+
+  pinMode(UPDATE_BUTTON_PIN, INPUT);
+  pinMode(EMERGENCY_BUTTON_PIN, INPUT);
+
+  pinMode(EMERGENCY_RELAY_PIN, OUTPUT);
+  pinMode(SLEEP_RELAY_PIN, OUTPUT);
 
   initSDCard();
 
@@ -139,6 +201,22 @@ void setup() {
     writeFile(SD, "/data.txt", "date, time, voltage (V), lux (lx), solarRadiation (W/m^2), moisture (%), humidity (%), temperature (°C), pressure (mbar), windSpeed (km/h), windDirection (°), windGust (km/h), rainAmmount (l) \r\n");
   }
   else {
+    totalLineData = countLine(SD, "/data.txt");
+    lastData = LatestData(SD, "/data.txt", totalLineData);
+    splitString(lastData, temp);
+
+    voltage = temp[3].toFloat();
+    lux = temp[4].toFloat();
+    solarRadiation = temp[5].toFloat();
+    moisturePercentage = temp[6].toFloat();
+    humBME = temp[7].toFloat();
+    tempBME = temp[8].toFloat();
+    pressBME = temp[9].toFloat();
+    windSpeed = temp[10].toFloat();
+    windDirection = temp[11].toFloat();
+    windGust = temp[12].toFloat();
+    rainAmmount = temp[13].toFloat();
+
     Serial.println("File already exists");  
   }
   file.close();
@@ -177,9 +255,21 @@ void setup() {
   WiFi.onEvent(WiFiGotIP, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_GOT_IP);
   WiFi.onEvent(WiFiStationDisconnected, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
 
-  WiFi.mode(WIFI_STA);
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(Apssid, Appassword);         //Starting AccessPoint on given credential
+  IPAddress myIP = WiFi.softAPIP();        //IP Address of our Esp32 accesspoint(where we can host webpages, and see data)
+  Serial.print("Access Point IP address: ");
+  Serial.println(myIP);
+
+  Serial.println("");
+
+  delay(1000);
+
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   connectAWS();
+  
+  digitalWrite(EMERGENCY_RELAY_PIN, LOW);
+  digitalWrite(SLEEP_RELAY_PIN, HIGH);
 
   tftStartDisplay();
   display.clearDisplay();
@@ -191,14 +281,21 @@ void setup() {
   display.display();
   delay(5000);
 
-  attachInterrupt(digitalPinToInterrupt(RAIN_PIN), ws1.countRain, FALLING); //ws1.countRain is the ISR for the rain gauge.
-  attachInterrupt(digitalPinToInterrupt(ANEMOMETER_PIN), ws1.countAnemometer, FALLING); //ws1.countAnemometer is the ISR for the anemometer.
+  attachInterrupt(digitalPinToInterrupt(RAIN_PIN), weatherStation.countRain, FALLING);
+  attachInterrupt(digitalPinToInterrupt(ANEMOMETER_PIN), weatherStation.countAnemometer, FALLING);
+
+  attachInterrupt(digitalPinToInterrupt(UPDATE_BUTTON_PIN), triggerManualUpdate, FALLING);
+  attachInterrupt(digitalPinToInterrupt(EMERGENCY_BUTTON_PIN), triggerEmergencyCond, FALLING);
 
   Serial.println();
   Serial.println("Program started");
 }
 
 void loop() {
+  weatherStation.update();
+  updateDate();
+  updateTime();
+
   int amtUpdate = xUpdate(update_mode);
   int* time_update = (int*) malloc(amtUpdate * sizeof(int)); 
   updateTime(time_update, update_mode); 
@@ -206,7 +303,7 @@ void loop() {
   DateTime now = rtc.now();
 
   for (int i = 0; i < amtUpdate; i++){
-    if(now.minute() == time_update[i] && now.second() < 13){
+    if(now.minute() == time_update[i] && now.second() < 1){
       isUpdate = true;
       break;
     }
@@ -216,6 +313,8 @@ void loop() {
   }
 
   if (WiFi.status() == WL_CONNECTED){
+    isReconnectingDisplay = false;
+
     if(!client.connect(THINGNAME)){
       connectAWS();
     }
@@ -248,7 +347,7 @@ void loop() {
         tempBME = temp[8].toFloat();
         pressBME = temp[9].toFloat();
         windSpeed = temp[10].toFloat();
-        windDirection = temp[11].toInt();
+        windDirection = temp[11].toFloat();
         windGust = temp[12].toFloat();
         rainAmmount = temp[13].toFloat();
 
@@ -267,14 +366,20 @@ void loop() {
     file.close();
   }
 
-  if (isUpdate){
+  if (isEmergency != lastStateEmergency){
+    publishMessage();
+  }
+
+  if (isUpdate || manualUpdate){
+    manualUpdate = false;
+    digitalWrite(SLEEP_RELAY_PIN, HIGH);
+
     showDate();     //show date on Serial Monitor
-    showTime();    //Current time: 24 Hrs
+    showTime();    //current time: 24 Hrs
 
     // Update Weather Data
     bme_update();
-    ws1.update();
-    weather_update();
+    weather_get_update();
     voltage_update();
     soilMoisture_update();
     lux_update();
@@ -288,8 +393,8 @@ void loop() {
     //Append the data to file
     appendFile(SD, "/data.txt", dataMessage.c_str());
 
-    tftDisplayData();
-    oledDisplay();
+    isDisplay = true;
+    lastDisplayTime = millis();
 
     if (WiFi.status() != WL_CONNECTED){
       Serial.println("Interlock! Save Data to SD Card\n");
@@ -322,38 +427,197 @@ void loop() {
 
   }
   else if(WiFi.status() != WL_CONNECTED){
-    int wait = waitTime(amtUpdate, time_update, now.minute());
-    Serial.print("Wait ");
-    Serial.print(wait);
-    Serial.println(" Minutes Again");
-    showTime();
+    isReconnectingDisplay = true;
 
-    tftReconnectDisplay();
-    tft.setFreeFont(FSB12);   
-    tft.println();         
-    tft.print("Next Update Data in ");
-    tft.print(wait);
-    tft.print("Minutes");
+    // int wait = waitTime(amtUpdate, time_update, now.minute());
 
-    display.clearDisplay();
-    display.display();
+    // Serial.print("Wait ");
+    // Serial.print(wait);
+    // Serial.println(" Minutes Again");
+    // showTime();
   }
-  else{
+  else if (!isDisplay && !isEmergency && !isReconnectingDisplay){
     tft.fillScreen(TFT_BLACK);
     display.clearDisplay();
     display.display();
 
+    // int wait = waitTime(amtUpdate, time_update, now.minute());
+
+    // Serial.print("Wait ");
+    // Serial.print(wait);
+    // Serial.println(" Minutes Again");
+    // showTime();
+
+    digitalWrite(SLEEP_RELAY_PIN, LOW);
+  }
+
+  if (isEmergency){
+    isDisplay = false;
+    isReconnectingDisplay = false;
+    
+    // Serial.println("Emergency Start (Relay HIGH = ON)");
+    digitalWrite(EMERGENCY_RELAY_PIN, HIGH);
+
+    digitalWrite(SLEEP_RELAY_PIN, HIGH);
+
+    if ((millis() - lastTimeEmergency) > timerEmergencyDelay) {
+      tftEmergencyDisplay();
+      lastTimeEmergency = millis();
+    }
+  }
+  else{
+    // Serial.println("Emergency Stop (Relay LOW = OFF)");
+    digitalWrite(EMERGENCY_RELAY_PIN, LOW);
+  }
+
+  if (isDisplay){
+    oledDisplay();
+    displayPage();
+  }
+  else if (isReconnectingDisplay){
+    digitalWrite(SLEEP_RELAY_PIN, HIGH);
+    
+    // oled (testing)
+    display.clearDisplay();
+    display.setTextSize(2.5);
+    display.setTextColor(WHITE);
+    display.setCursor(20, 20);
+    // Display static text
+    display.println("Reconnecting...");
+    display.display();
+
+    int wait = waitTime(amtUpdate, time_update, now.minute());
+
+    // tft lcd
+    tftReconnectDisplay();
+    tft.setFreeFont(FSB12); 
+    tft.println();         
+    tft.print("Next Update Data in ");
+    tft.print(wait);
+    tft.print("Minutes");
+  }
+
+  if ((millis() - lastTime) > timerDelay) {
     int wait = waitTime(amtUpdate, time_update, now.minute());
 
     Serial.print("Wait ");
     Serial.print(wait);
     Serial.println(" Minutes Again");
     showTime();
+    lastTime = millis();
+
+    if (!isDisplay && !isEmergency && !isReconnectingDisplay){
+      Serial.println("No Display");
+    }
   }
+
+  lastStateEmergency = isEmergency;
 
   client.loop();
 
-  delay(10000);
+  delay(500);
+}
+
+void displayPage(){
+
+  // if (first){
+  //   tft.fillScreen(TFT_NAVY);
+  //   first = false;
+  // }
+
+  if ((millis() - lastDisplayTime) > displayDelay) {
+    isDisplay = false;
+  }
+  else if ((millis() - lastDisplayTime) <= 600){
+    tftDisplayData1();
+  }
+  else if (((millis() - lastDisplayTime) > delayPageDisplay) && ((millis() - lastDisplayTime) <= delayPageDisplay + 600)){
+    tftDisplayData2();
+  }
+  else if (((millis() - lastDisplayTime) > 2*delayPageDisplay) && ((millis() - lastDisplayTime) <= 2*delayPageDisplay + 600)){
+    tftDisplayData1();
+  }
+  else if (((millis() - lastDisplayTime) > 3*delayPageDisplay) && ((millis() - lastDisplayTime) <= 3*delayPageDisplay + 600)){
+    tftDisplayData2();
+  }
+  else if (((millis() - lastDisplayTime) > 4*delayPageDisplay) && ((millis() - lastDisplayTime) <= 4*delayPageDisplay + 600)){
+    tftDisplayData1();
+  }
+  else if (((millis() - lastDisplayTime) > 5*delayPageDisplay) && ((millis() - lastDisplayTime) <= 5*delayPageDisplay + 600)){
+    tftDisplayData2();
+  }
+}
+
+void tftDisplayData1(){
+  int xpos =  0;
+  int ypos = 40;
+
+  tft.fillScreen(TFT_NAVY); // Clear screen to navy background
+
+  header("AgriCal (Data 1)");
+
+  // For comaptibility with Adafruit_GFX library the text background is not plotted when using the print class
+  // even if we specify it.
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.setCursor(xpos, ypos);    // Set cursor near top left corner of screen
+
+  tft.setFreeFont(FSB12);   // Select Free Serif 9 point font, could use:
+  // tft.setFreeFont(&FreeSerif9pt7b);
+  tft.println();          // Free fonts plot with the baseline (imaginary line the letter A would sit on)
+  // as the datum, so we must move the cursor down a line from the 0,0 position
+  tft.print("humidity (%): ");  // Print the font name onto the TFT screen
+  tft.print(humBME);
+
+  tft.setFreeFont(FSB12);       // Select Free Serif 12 point font
+  tft.println();                // Move cursor down a line
+  tft.print("Temperature (°C): ");  // Print the font name onto the TFT screen
+  tft.print(tempBME);
+
+  tft.setFreeFont(FSB18);       // Select Free Serif 12 point font
+  tft.println();                // Move cursor down a line
+  tft.print("Pressure (mbar): ");  // Print the font name onto the TFT screen
+  tft.print(pressBME);
+
+  tft.setFreeFont(FSB24);       // Select Free Serif 24 point font
+  tft.println();                // Move cursor down a line
+  tft.print("Lux (lx): ");  // Print the font name onto the TFT screen
+  tft.print(lux);
+}
+
+void tftDisplayData2(){
+  int xpos =  0;
+  int ypos = 40;
+
+  tft.fillScreen(TFT_NAVY); // Clear screen to navy background
+
+  header("AgriCal (Data 2)");
+
+  // For comaptibility with Adafruit_GFX library the text background is not plotted when using the print class
+  // even if we specify it.
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.setCursor(xpos, ypos);    // Set cursor near top left corner of screen
+
+  tft.setFreeFont(FSB12);   // Select Free Serif 9 point font, could use:
+  // tft.setFreeFont(&FreeSerif9pt7b);
+  tft.println();          // Free fonts plot with the baseline (imaginary line the letter A would sit on)
+  // as the datum, so we must move the cursor down a line from the 0,0 position
+  tft.print("windSpeed (km/h): ");  // Print the font name onto the TFT screen
+  tft.print(windSpeed);
+
+  tft.setFreeFont(FSB12);       // Select Free Serif 12 point font
+  tft.println();                // Move cursor down a line
+  tft.print("windDirection (°): ");  // Print the font name onto the TFT screen
+  tft.print(windDirection);
+
+  tft.setFreeFont(FSB18);       // Select Free Serif 12 point font
+  tft.println();                // Move cursor down a line
+  tft.print("windGust (km/h): ");  // Print the font name onto the TFT screen
+  tft.print(windSpeed);
+
+  tft.setFreeFont(FSB24);       // Select Free Serif 24 point font
+  tft.println();                // Move cursor down a line
+  tft.print("rainAmmount (l): ");  // Print the font name onto the TFT screen
+  tft.print(rainAmmount);
 }
 
 String LatestData(fs::FS &fs, const char * path, uint32_t position){
@@ -669,7 +933,7 @@ void serialMonitor(){
 
   Serial.print("Wind Direction: ");
   Serial.print(windDirection);
-  Serial.println(" °");
+  Serial.println("°");
 
   Serial.print("Total Rain: ");
   Serial.print(rainAmmount);
@@ -678,40 +942,28 @@ void serialMonitor(){
   Serial.println("-------------------------------");
 }
 
-void tftDisplayData(){
-  int xpos =  0;
-  int ypos = 40;
+void tftEmergencyDisplay(){
+    int xpos =  0;
+    int ypos = 40;
 
-  tft.fillScreen(TFT_NAVY); // Clear screen to navy background
+    // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    // Select different fonts to draw on screen using the print class
+    // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
-  header("AgriCal");
+    tft.fillScreen(TFT_NAVY); // Clear screen to navy background
 
-  // For comaptibility with Adafruit_GFX library the text background is not plotted when using the print class
-  // even if we specify it.
-  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-  tft.setCursor(xpos, ypos);    // Set cursor near top left corner of screen
+    header("EMERGENCY!!");
 
-  tft.setFreeFont(FSB12);   // Select Free Serif 9 point font, could use:
-  // tft.setFreeFont(&FreeSerif9pt7b);
-  tft.println();          // Free fonts plot with the baseline (imaginary line the letter A would sit on)
-  // as the datum, so we must move the cursor down a line from the 0,0 position
-  tft.print("humidity (%): ");  // Print the font name onto the TFT screen
-  tft.print(humBME);
+    // For comaptibility with Adafruit_GFX library the text background is not plotted when using the print class
+    // even if we specify it.
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft.setCursor(xpos, ypos);    // Set cursor near top left corner of screen
 
-  tft.setFreeFont(FSB12);       // Select Free Serif 12 point font
-  tft.println();                // Move cursor down a line
-  tft.print("Temperature (°C): ");  // Print the font name onto the TFT screen
-  tft.print(tempBME);
-
-  tft.setFreeFont(FSB18);       // Select Free Serif 12 point font
-  tft.println();                // Move cursor down a line
-  tft.print("Pressure (mbar): ");  // Print the font name onto the TFT screen
-  tft.print(pressBME);
-
-  tft.setFreeFont(FSB24);       // Select Free Serif 24 point font
-  tft.println();                // Move cursor down a line
-  tft.print("Lux (lx): ");  // Print the font name onto the TFT screen
-  tft.print(lux);
+    tft.setFreeFont(FSB12);   // Select Free Serif 9 point font, could use:
+    // tft.setFreeFont(&FreeSerif9pt7b);
+    tft.println();          // Free fonts plot with the baseline (imaginary line the letter A would sit on)
+    // as the datum, so we must move the cursor down a line from the 0,0 position
+    tft.print("EMERGENCY CONDITION");  // Print the font name onto the TFT screen
 }
 
 void tftReconnectDisplay(){
@@ -788,7 +1040,7 @@ void connectAWS(){
  
   Serial.printf("\nConnecting to AWS IOT\n");
  
-  unsigned long currentMillis = millis();
+  unsigned long lastMillis = millis();
 
   // if ((!client.connect(THINGNAME)) && (currentMillis - previousMillis >= interval)) {
   //   Serial.print(millis());
@@ -798,6 +1050,11 @@ void connectAWS(){
   if (WiFi.status() == WL_CONNECTED){
     while (!client.connect(THINGNAME)){
       Serial.print(".");
+
+      if ((millis() - lastMillis) > 10000){
+        ESP.restart();
+      }
+      
       delay(100);
     }
   }
@@ -810,51 +1067,84 @@ void connectAWS(){
   // Subscribe to a topic
   client.subscribe(AWS_IOT_SUBSCRIBE_TOPIC);
  
-  Serial.printf("\nAWS IoT Connected!\n");
+  Serial.println("AWS IoT Connected!");
 }
 
 void publishMessage(){
-  StaticJsonDocument<200> doc1;
-  StaticJsonDocument<200> doc2;
+  // DynamicJsonDocument doc(4096);
+  StaticJsonDocument<200> doc;
   //Assign collected data to JSON Object
   // DateTime nowDT = rtc.now();
   // date = formatDate(nowDT.day(), nowDT.month(), nowDT.year());
   // timeRTC = formatTime(nowDT.hour(), nowDT.minute(), nowDT.second());
-  doc1["date"] = date;
-  doc1["time"] = timeRTC;
-  doc1["voltage"] = voltage;
-  doc1["lux"] = lux;
-  doc1["solarRadiation"] = solarRadiation;
-  doc1["moisture"] = moisturePercentage;
-  doc1["humidity"] = humBME;
+  volatile bool status_irigasi = false;
+  float wlevel = 1;
 
-  doc2["date"] = date;
-  doc2["time"] = timeRTC;
-  doc2["temperature"] = tempBME;
-  doc2["pressure"] = pressBME;
-  doc2["windSpeed"] = windSpeed;
-  doc2["windDirection"] = windDirection;
-  doc2["windGust"] = windGust;
-  doc2["rainAmount"] = rainAmmount;
-
-  char jsonBuffer1[512];
-  char jsonBuffer2[512];
-  serializeJson(doc1, jsonBuffer1); // print to client
-  serializeJson(doc2, jsonBuffer2); // print to client
+  doc["timestamp"][0] = date;
+  doc["timestamp"][1] = timeRTC;
+  doc["voltage"] = voltage;
+  doc["BH1750"][0] = lux;
+  doc["BH1750"][1] = solarRadiation;
+  doc["BME"][0] = humBME;
+  doc["BME"][1] = tempBME;
+  doc["BME"][2] = pressBME;
+  doc["ADS"][0] = windSpeed;
+  doc["ADS"][1] = windDirection;
+  doc["ADS"][2] = windGust;
+  doc["ADS"][3] = rainAmmount;
+  doc["irrigation"]["stat"] = status_irigasi;
+  doc["irrigation"]["wlevel"] = wlevel;
+  doc["irrigation"]["moist"] = moisturePercentage;
+  doc["emergency"] = isEmergency;
+  
+  char jsonBuffer[512];
+  serializeJson(doc, jsonBuffer); // print to client
  
-  client.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer1);
-  client.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer2);
+  client.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer);
 }
+
+// void publishMessage(){
+//   StaticJsonDocument<200> doc1;
+//   StaticJsonDocument<200> doc2;
+//   //Assign collected data to JSON Object
+//   // DateTime nowDT = rtc.now();
+//   // date = formatDate(nowDT.day(), nowDT.month(), nowDT.year());
+//   // timeRTC = formatTime(nowDT.hour(), nowDT.minute(), nowDT.second());
+//   doc1["date"] = date;
+//   doc1["time"] = timeRTC;
+//   doc1["voltage"] = voltage;
+//   doc1["lux"] = lux;
+//   doc1["solarRadiation"] = solarRadiation;
+//   doc1["moisture"] = moisturePercentage;
+//   doc1["humidity"] = humBME;
+
+//   doc2["date"] = date;
+//   doc2["time"] = timeRTC;
+//   doc2["temperature"] = tempBME;
+//   doc2["pressure"] = pressBME;
+//   doc2["windSpeed"] = windSpeed;
+//   doc2["windDirection"] = windDirection;
+//   doc2["windGust"] = windGust;
+//   doc2["rainAmount"] = rainAmmount;
+
+//   char jsonBuffer1[512];
+//   char jsonBuffer2[512];
+//   serializeJson(doc1, jsonBuffer1); // print to client
+//   serializeJson(doc2, jsonBuffer2); // print to client
+ 
+//   client.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer1);
+//   client.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer2);
+// }
 
 // void publishMessage(){
 //   StaticJsonDocument<200> doc;
 //   //Assign collected data to JSON Object
-//   DateTime nowDT = rtc.now();
-//   date = formatDate(nowDT.day(), nowDT.month(), nowDT.year());
-//   timeRTC = formatTime(nowDT.hour(), nowDT.minute(), nowDT.second());
+//   // DateTime nowDT = rtc.now();
+//   // date = formatDate(nowDT.day(), nowDT.month(), nowDT.year());
+//   // timeRTC = formatTime(nowDT.hour(), nowDT.minute(), nowDT.second());
 //   String timestamp = date + "," + timeRTC;
 //   doc["timestamp"] = timestamp;
-//   doc["voltage"] = voltage;
+//   doc["humidity"] = humBME;
 //   doc["moisture"] = moisturePercentage;
 
 //   char jsonBuffer[512];
@@ -864,7 +1154,7 @@ void publishMessage(){
 // }
 
 // void publishMessage(){
-//   StaticJsonDocument<200> doc;
+//   StaticJsonDocument<300> doc;
 //   //Assign collected data to JSON Object
 //   DateTime nowDT = rtc.now();
 //   date = formatDate(nowDT.day(), nowDT.month(), nowDT.year());
@@ -909,11 +1199,13 @@ void bme_update() {
   pressBME = bme.readPressure() / 100.0F;
 }
 
-void weather_update(){
-  rainAmmount = ws1.getRain() / 4000;
-  windSpeed = ws1.getWindSpeed() / 10;
-  windDirection = ws1.getWindDirection();
-  windGust = ws1.getWindGust() / 10;
+void weather_get_update(){
+  rainAmmount = weatherStation.getRain() / 4000 - tempRain;
+  windSpeed = weatherStation.getWindSpeed();
+  windDirection = weatherStation.getWindDirection();
+  windGust = weatherStation.getWindGust();
+
+  tempRain = rainAmmount;
 }
 
 void voltage_update(){
@@ -938,9 +1230,15 @@ void voltage_update(){
 }
 
 void soilMoisture_update(){
-  // soilMoistureValue = analogRead(soilMoisturePin);
-  soilMoistureValue = analogRead(soilMoisturePin)*470/2480;
+  soilMoistureValue = analogRead(soilMoisturePin);
   moisturePercentage = map(soilMoistureValue, AirValue, WaterValue, 0, 100);
+
+  if(moisturePercentage > 100){
+    moisturePercentage = 100;
+  } 
+  else if(moisturePercentage < 0) {
+    moisturePercentage = 0;
+  }
 }
 
 void lux_update(){
@@ -960,6 +1258,16 @@ int xUpdate(int update_mode){
     amtUpdate = 30;
   }
   return amtUpdate;
+}
+
+void updateDate(){
+  DateTime nowDT = rtc.now();
+  date = formatDate(nowDT.day(), nowDT.month(), nowDT.year());
+}
+
+void updateTime(){
+  DateTime nowDT = rtc.now();
+  timeRTC = formatTime(nowDT.hour(), nowDT.minute(), nowDT.second());
 }
 
 void showDate(){

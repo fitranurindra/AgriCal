@@ -1,5 +1,13 @@
+#include <TFT_eSPI.h> // Hardware-specific library
+#include "Free_Fonts.h"
+
+#include <SPI.h>
+#include <Wire.h>
+
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+
+#define FSB12 &FreeSerifBold12pt7b
 
 #define UPDATE_BUTTON_PIN 16
 #define EMERGENCY_BUTTON_PIN 13
@@ -11,6 +19,8 @@
 
 // Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+TFT_eSPI tft = TFT_eSPI(); 
 
 // Timer variables
 unsigned long lastTime = 0;
@@ -46,13 +56,7 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(EMERGENCY_BUTTON_PIN), triggerEmergencyCond, FALLING);
 
   delay(1000);
-  display.clearDisplay();
-  display.setTextSize(2.5);
-  display.setTextColor(WHITE);
-  display.setCursor(20, 20);
-  // Display static text
-  display.println("Agrical");
-  display.display();
+  tftStartDisplay();
   delay(5000);
 
   Serial.println();
@@ -104,23 +108,116 @@ void displayPage(){
     isDisplay = false;
   }
   else if ((millis() - lastDisplayTime) <= delayPageDisplay){
-    oledDisplay1();
+    tftDisplayData1();
   }
   else if (((millis() - lastDisplayTime) > delayPageDisplay) && ((millis() - lastDisplayTime) <= 2*delayPageDisplay)){
-    oledDisplay2();
+    tftDisplayData2();
   }
   else if (((millis() - lastDisplayTime) > 2*delayPageDisplay) && ((millis() - lastDisplayTime) <= 3*delayPageDisplay)){
-    oledDisplay1();
+    tftDisplayData1();
   }
   else if (((millis() - lastDisplayTime) > 3*delayPageDisplay) && ((millis() - lastDisplayTime) <= 4*delayPageDisplay)){
-    oledDisplay2();
+    tftDisplayData2();
   }
   else if (((millis() - lastDisplayTime) > 4*delayPageDisplay) && ((millis() - lastDisplayTime) <= 5*delayPageDisplay)){
-    oledDisplay1();
+    tftDisplayData1();
   }
   else if (((millis() - lastDisplayTime) > 5*delayPageDisplay) && ((millis() - lastDisplayTime) <= 6*delayPageDisplay)){
-    oledDisplay2();
+    tftDisplayData2();
   }
+}
+
+// Print the header for a display screen
+void header(const char *string){
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_MAGENTA, TFT_BLUE);
+  tft.fillRect(0, 0, 480, 30, TFT_BLUE);
+  tft.setTextDatum(TC_DATUM);
+  tft.drawString(string, 239, 2, 4); // Font 4 for fast drawing with background
+}
+
+void tftStartDisplay(){
+  int xpos =  50;
+  int ypos = 50;
+
+  tft.fillScreen(TFT_NAVY); // Clear screen to navy background
+
+  header("Sistem Kalender Pertanian");
+
+  // For comaptibility with Adafruit_GFX library the text background is not plotted when using the print class
+  // even if we specify it.
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.setCursor(xpos, ypos);    // Set cursor near top left corner of screen
+
+  tft.setFreeFont(FSB12);   // Select Free Serif 9 point font, could use:
+  // tft.setFreeFont(&FreeSerif9pt7b);
+  tft.println();          // Free fonts plot with the baseline (imaginary line the letter A would sit on)
+  // as the datum, so we must move the cursor down a line from the 0,0 position
+  tft.print("AgriCal");  // Print the font name onto the TFT screen
+}
+
+void tftDisplayData1(){
+  int xpos =  0;
+  int ypos = 40;
+
+  tft.fillScreen(TFT_NAVY); // Clear screen to navy background
+
+  header("AgriCal (Data 1)");
+
+  // For comaptibility with Adafruit_GFX library the text background is not plotted when using the print class
+  // even if we specify it.
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.setCursor(xpos, ypos);    // Set cursor near top left corner of screen
+
+  tft.setFreeFont(FSB12);   // Select Free Serif 9 point font, could use:
+  // tft.setFreeFont(&FreeSerif9pt7b);
+  tft.println();          // Free fonts plot with the baseline (imaginary line the letter A would sit on)
+  // as the datum, so we must move the cursor down a line from the 0,0 position
+  tft.print("humidity (%): ");  // Print the font name onto the TFT screen
+
+  tft.setFreeFont(FSB12);       // Select Free Serif 12 point font
+  tft.println();                // Move cursor down a line
+  tft.print("Temperature (°C): ");  // Print the font name onto the TFT screen
+
+  tft.setFreeFont(FSB12);       // Select Free Serif 12 point font
+  tft.println();                // Move cursor down a line
+  tft.print("Pressure (mbar): ");  // Print the font name onto the TFT screen
+
+  tft.setFreeFont(FSB12);       // Select Free Serif 24 point font
+  tft.println();                // Move cursor down a line
+  tft.print("Lux (lx): ");  // Print the font name onto the TFT screen
+}
+
+void tftDisplayData2(){
+  int xpos =  0;
+  int ypos = 40;
+
+  tft.fillScreen(TFT_NAVY); // Clear screen to navy background
+
+  header("AgriCal (Data 2)");
+
+  // For comaptibility with Adafruit_GFX library the text background is not plotted when using the print class
+  // even if we specify it.
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.setCursor(xpos, ypos);    // Set cursor near top left corner of screen
+
+  tft.setFreeFont(FSB12);   // Select Free Serif 9 point font, could use:
+  // tft.setFreeFont(&FreeSerif9pt7b);
+  tft.println();          // Free fonts plot with the baseline (imaginary line the letter A would sit on)
+  // as the datum, so we must move the cursor down a line from the 0,0 position
+  tft.print("windSpeed (km/h): ");  // Print the font name onto the TFT screen
+
+  tft.setFreeFont(FSB12);       // Select Free Serif 12 point font
+  tft.println();                // Move cursor down a line
+  tft.print("windDirection (°): ");  // Print the font name onto the TFT screen
+
+  tft.setFreeFont(FSB12);       // Select Free Serif 12 point font
+  tft.println();                // Move cursor down a line
+  tft.print("windGust (km/h): ");  // Print the font name onto the TFT screen
+
+  tft.setFreeFont(FSB12);       // Select Free Serif 24 point font
+  tft.println();                // Move cursor down a line
+  tft.print("rainAmmount (l): ");  // Print the font name onto the TFT screen
 }
 
 void oledDisplay1(){
@@ -168,3 +265,33 @@ void triggerEmergencyCond(){
 
   Serial.println("Change Emergency State");
 }
+
+
+#ifndef LOAD_GLCD
+//ERROR_Please_enable_LOAD_GLCD_in_User_Setup
+#endif
+
+#ifndef LOAD_FONT2
+//ERROR_Please_enable_LOAD_FONT2_in_User_Setup!
+#endif
+
+#ifndef LOAD_FONT4
+//ERROR_Please_enable_LOAD_FONT4_in_User_Setup!
+#endif
+
+#ifndef LOAD_FONT6
+//ERROR_Please_enable_LOAD_FONT6_in_User_Setup!
+#endif
+
+#ifndef LOAD_FONT7
+//ERROR_Please_enable_LOAD_FONT7_in_User_Setup!
+#endif
+
+#ifndef LOAD_FONT8
+//ERROR_Please_enable_LOAD_FONT8_in_User_Setup!
+#endif
+
+#ifndef LOAD_GFXFF
+ERROR_Please_enable_LOAD_GFXFF_in_User_Setup!
+#endif
+
